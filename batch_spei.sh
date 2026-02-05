@@ -50,7 +50,7 @@ SCENARIOS=(
 )
 
 # Settings
-PET_METHOD="penman"      # hargreaves, thornthwaite, or penman
+PET_METHOD="hargreaves"      # hargreaves, thornthwaite, or penman
 SPEI_SCALES="2,3,6"
 CALIBRATION="1979-2014"
 
