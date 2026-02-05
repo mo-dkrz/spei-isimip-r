@@ -50,8 +50,8 @@ SCENARIOS=(
 )
 
 # Settings
-PET_METHOD="hargreaves"      # hargreaves, thornthwaite, or penman
-SPEI_SCALES="2,3,6"
+PET_METHOD="penman"      # hargreaves, thornthwaite, or penman
+SPEI_SCALES="2,6,12"
 CALIBRATION="1979-2014"
 
 # Paths - Can be overridden by environment variables
