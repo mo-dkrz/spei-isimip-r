@@ -29,7 +29,7 @@ cd spei-isimip-r
 
 # run only the first state, it means GFDL-ESM4 and SSP126
 # to take a test if it works or not
-sbatch --array=0 batch_spei_improved.sh
+sbatch --array=0 batch_spei.sh
 
 # run all
 ./helper.sh submit
