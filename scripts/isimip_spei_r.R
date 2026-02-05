@@ -17,7 +17,7 @@ option_list <- list(
   make_option("--sfcwind", type="character", default=NULL, help="Wind speed files"),
   make_option("--ps", type="character", default=NULL, help="Surface pressure files"),
   make_option("--pet-method", type="character", default="penman", help="PET method: hargreaves, thornthwaite, penman"),
-  make_option("--scales", type="character", default="3,6", help="SPEI scales (e.g., '2,3,6')"),
+  make_option("--scales", type="character", default="2,3,6", help="SPEI scales (e.g., '2,3,6')"),
   make_option("--calibration", type="character", default="1979-2014", help="Calibration period (YYYY-YYYY)"),
   make_option("--out-pet", type="character", default=NULL, help="Output PET NetCDF file (optional)"),
   make_option("--out-spei", type="character", help="Output SPEI NetCDF file")
