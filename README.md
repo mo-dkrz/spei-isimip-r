@@ -16,7 +16,7 @@ This setup processes 15 model-scenario combinations (5 models × 3 scenarios).
 
 ```bash
 module load anaconda
-conda create --prefix $HOME/spei-r r-base r-essentials -y
+conda create --prefix $HOME/spei-r -c conda-forge r-base r-essentials netcdf4 -y
 $HOME/spei-r/bin/R --version
 $HOME/spei-r/bin/R -e 'install.packages(c("SPEI", "ncdf4", "optparse", "abind"), repos="https://cran.r-project.org")'
 ```
