@@ -222,9 +222,31 @@ for (i in 1:n_lon) {
       } else if (opt$`pet-method` == "penman") {
         # Penman requires more variables - load if not already loaded
         if (!exists("hurs")) {
-          hurs <<- load_var(opt$hurs, "hurs")
-          rsds <<- load_var(opt$rsds, "rsds")
-          sfcwind <<- load_var(opt$sfcwind, "sfcwind")
+          hurs_raw <- load_var(opt$hurs, "hurs")
+          rsds_raw <- load_var(opt$rsds, "rsds")
+          sfcwind_raw <- load_var(opt$sfcwind, "sfcwind")
+
+          # Aggregate to monthly if daily data**
+          if (is_daily) {
+            hurs_monthly <- array(NA, dim=c(n_lon, n_lat, n_months))
+            rsds_monthly <- array(NA, dim=c(n_lon, n_lat, n_months))
+            sfcwind_monthly <- array(NA, dim=c(n_lon, n_lat, n_months))
+
+            for (m in seq_along(unique_months)) {
+              month_mask <- year_month == unique_months[m]
+              hurs_monthly[, , m] <- apply(hurs_raw$data[, , month_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
+              rsds_monthly[, , m] <- apply(rsds_raw$data[, , month_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
+              sfcwind_monthly[, , m] <- apply(sfcwind_raw$data[, , month_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
+            }
+
+            hurs <<- list(data=hurs_monthly)
+            rsds <<- list(data=rsds_monthly)
+            sfcwind <<- list(data=sfcwind_monthly)
+          } else {
+            hurs <<- hurs_raw
+            rsds <<- rsds_raw
+            sfcwind <<- sfcwind_raw
+          }
         }
         
         # Convert Rs from W/m2 to MJ/m2/day
