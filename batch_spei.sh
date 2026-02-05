@@ -190,6 +190,11 @@ TASMAX=$(build_file_list "${HIST_DIR}" "${FUT_DIR}" "*_tasmax_*.nc") || exit 1
 N_PR=$(echo $PR | tr ',' '\n' | wc -l)
 N_TASMIN=$(echo $TASMIN | tr ',' '\n' | wc -l)
 N_TASMAX=$(echo $TASMAX | tr ',' '\n' | wc -l)
+echo ""
+echo "DEBUG - First 3 PR files:"
+echo "$PR" | tr ',' '\n' | head -3
+echo ""
+echo "Total PR files: $(echo $PR | tr ',' '\n' | wc -l)"
 
 echo "  PR: ${N_PR} files"
 echo "  TASMIN: ${N_TASMIN} files"

@@ -29,6 +29,13 @@ opt <- parse_args(OptionParser(option_list=option_list))
 scales <- as.integer(strsplit(opt$scales, ",")[[1]])
 cal_years <- as.integer(strsplit(opt$calibration, "-")[[1]])
 
+# Validate Penman method requirements
+if (opt$`pet-method` == "penman") {
+  if (is.null(opt$hurs) || is.null(opt$rsds) || is.null(opt$sfcwind)) {
+    stop("ERROR: Penman method requires --hurs, --rsds, and --sfcwind arguments")
+  }
+}
+
 cat("==============================================\n")
 cat("ISIMIP SPEI - R Implementation\n")
 cat("==============================================\n")
@@ -46,28 +53,64 @@ load_var <- function(file_pattern, varname=NULL) {
     if (is.null(varname)) varname <- names(nc$var)[1]
     data <- ncvar_get(nc, varname)
     time <- ncvar_get(nc, "time")
+
+    # Get time units and convert to common reference
+    time_units <- ncatt_get(nc, "time", "units")$value
+    origin_match <- regmatches(time_units, regexpr("\\d{4}-\\d{2}-\\d{2}", time_units))
+    if (length(origin_match) > 0) {
+      file_origin <- as.Date(origin_match[1])
+      common_origin <- as.Date("1850-01-01")
+      time <- time + as.numeric(file_origin - common_origin)
+    }
+
     lon <- ncvar_get(nc, "lon")
     lat <- ncvar_get(nc, "lat")
     nc_close(nc)
     return(list(data=data, time=time, lon=lon, lat=lat, varname=varname))
+
   } else {
     # Multiple files - concatenate along time
     all_data <- list()
     all_time <- c()
+    common_origin <- as.Date("1850-01-01")
     
     for (f in files) {
       nc <- nc_open(f)
       if (is.null(varname)) varname <- names(nc$var)[1]
+
+      # Load data
       all_data[[length(all_data)+1]] <- ncvar_get(nc, varname)
-      all_time <- c(all_time, ncvar_get(nc, "time"))
+
+      # Load time and convert to common reference
+      time_raw <- ncvar_get(nc, "time")
+      time_units <- ncatt_get(nc, "time", "units")$value
+
+      # Extract origin from this file
+      origin_match <- regmatches(time_units, regexpr("\\d{4}-\\d{2}-\\d{2}", time_units))
+      if (length(origin_match) > 0) {
+        file_origin <- as.Date(origin_match[1])
+        # Convert to common origin (1850-01-01)
+        time_adjusted <- time_raw + as.numeric(file_origin - common_origin)
+      } else {
+        time_adjusted <- time_raw
+      }
+
+      all_time <- c(all_time, time_adjusted)
+
       if (length(all_data) == 1) {
         lon <- ncvar_get(nc, "lon")
         lat <- ncvar_get(nc, "lat")
       }
       nc_close(nc)
     }
-    
+
     data <- do.call(abind::abind, c(all_data, list(along=3)))
+
+    # Sort by time to ensure chronological order
+    ord <- order(all_time)
+    all_time <- all_time[ord]
+    data <- data[, , ord, drop=FALSE]
+
     return(list(data=data, time=all_time, lon=lon, lat=lat, varname=varname))
   }
 }
@@ -81,30 +124,6 @@ cat("Loading data...\n")
 pr <- load_var(opt$precip, "pr")
 tasmin <- load_var(opt$tasmin, "tasmin")
 tasmax <- load_var(opt$tasmax, "tasmax")
-
-# Get time units from first file
-pr_files <- unlist(strsplit(opt$precip, ","))
-nc_temp <- nc_open(pr_files[1])
-time_units <- ncatt_get(nc_temp, "time", "units")
-nc_close(nc_temp)
-
-if (!time_units$hasatt) {
-  cat("  WARNING: No time units attribute found, assuming 'days since 1850-01-01'\n")
-  time_origin <- "1850-01-01"
-} else {
-  time_units_str <- time_units$value
-  cat(sprintf("  NetCDF time units: %s\n", time_units_str))
-  
-  # Extract origin date from string like "days since YYYY-MM-DD"
-  origin_match <- regmatches(time_units_str, regexpr("\\d{4}-\\d{2}-\\d{2}", time_units_str))
-  if (length(origin_match) > 0) {
-    time_origin <- origin_match[1]
-  } else {
-    time_origin <- "1850-01-01"
-    cat("  WARNING: Could not parse origin, using 1850-01-01\n")
-  }
-  cat(sprintf("  Using time origin: %s\n", time_origin))
-}
 
 # Convert dimensions
 n_lon <- length(pr$lon)
@@ -129,8 +148,8 @@ cat(sprintf("  Is daily: %s\n", is_daily))
 if (is_daily) {
   cat("  Detected daily data, aggregating to monthly...\n")
   
-  # Create monthly time index using correct origin
-  dates <- as.Date(pr$time, origin=time_origin)
+  # Create monthly time index using common origin (1850-01-01)
+  dates <- as.Date(pr$time, origin="1850-01-01")
   
   cat(sprintf("  First date parsed: %s\n", as.character(dates[1])))
   cat(sprintf("  Last date parsed: %s\n", as.character(dates[length(dates)])))
@@ -158,10 +177,14 @@ if (is_daily) {
     if (m %% 12 == 0) cat(sprintf("    Month %d/%d\n", m, n_months))
     
     month_mask <- year_month == unique_months[m]
-    n_days <- sum(month_mask)
     
     # Precip: sum over month (kg/m2/s * 86400 s/day * days)
-    pr_monthly[, , m] <- apply(pr$data[, , month_mask, drop=FALSE] * 86400, c(1,2), sum)
+    pr_monthly[, , m] <- apply(
+      pr$data[, , month_mask, drop=FALSE] * 86400,
+      c(1,2),
+      sum,
+      na.rm = TRUE
+    )
     
     # Temperature: monthly mean
     tasmin_monthly[, , m] <- apply(tasmin$data[, , month_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
@@ -178,12 +201,25 @@ if (is_daily) {
   
 } else {
   cat("  Data already monthly\n")
-  # Precip: kg/m2/s -> mm/month (approximate)
-  pr_mm <- pr$data * 86400 * 30  # Rough estimate
   
-  # Create monthly_dates from original time using correct origin
-  dates <- as.Date(pr$time, origin=time_origin)
+  # Create monthly_dates from original time using common origin (1850-01-01)
+  dates <- as.Date(pr$time, origin="1850-01-01")
   monthly_dates <- dates
+  
+  # Calculate actual days in each month
+  month_start <- as.Date(format(monthly_dates, "%Y-%m-01"))
+  next_month <- seq(month_start[1], by = "month", length.out = length(month_start) + 1)[-1]
+  if (length(next_month) < length(month_start)) {
+    # Handle last month
+    next_month <- c(next_month, seq(month_start[length(month_start)], by = "month", length.out = 2)[2])
+  }
+  days_in_month <- as.integer(next_month - month_start)
+  
+  # Convert kg/m2/s -> mm/month using actual month length
+  pr_mm <- array(0, dim = dim(pr$data))
+  for (t in seq_along(days_in_month)) {
+    pr_mm[, , t] <- pr$data[, , t] * 86400 * days_in_month[t]
+  }
 }
 
 # Temperature: K -> C if needed
@@ -277,12 +313,12 @@ if (!is.null(opt$`out-pet`)) {
   lon_dim <- ncdim_def("lon", "degrees_east", pr$lon)
   lat_dim <- ncdim_def("lat", "degrees_north", pr$lat)
   
-  # Create monthly time dimension (use first day of each month)
+  # Create monthly time dimension (days since 1850-01-01)
   if (is_daily) {
-    time_vals <- as.numeric(monthly_dates - as.Date(time_origin))
-    time_dim <- ncdim_def("time", paste("days since", time_origin), time_vals)
+    time_vals <- as.numeric(monthly_dates - as.Date("1850-01-01"))
+    time_dim <- ncdim_def("time", "days since 1850-01-01", time_vals)
   } else {
-    time_dim <- ncdim_def("time", paste("days since", time_origin), pr$time)
+    time_dim <- ncdim_def("time", "days since 1850-01-01", pr$time)
   }
   
   pet_var <- ncvar_def("pet", "mm/month", list(lon_dim, lat_dim, time_dim), -999,
@@ -296,6 +332,7 @@ if (!is.null(opt$`out-pet`)) {
   
   ncvar_put(nc_out, "pet", pet_clean)
   ncatt_put(nc_out, 0, "title", sprintf("PET (%s method)", opt$`pet-method`))
+  ncatt_put(nc_out, "time", "calendar", "proleptic_gregorian")
   nc_close(nc_out)
 }
 
@@ -324,6 +361,7 @@ if (!is.null(opt$`out-pet`)) {
   ncvar_put(nc_wb, "wb", wb_clean)
   ncatt_put(nc_wb, 0, "title", "Water Balance (Precipitation - PET)")
   ncatt_put(nc_wb, 0, "pet_method", opt$`pet-method`)
+  ncatt_put(nc_wb, "time", "calendar", "proleptic_gregorian")
   nc_close(nc_wb)
 }
 
@@ -416,13 +454,13 @@ cat(sprintf("\nSaving SPEI to: %s\n", opt$`out-spei`))
 lon_dim <- ncdim_def("lon", "degrees_east", pr$lon)
 lat_dim <- ncdim_def("lat", "degrees_north", pr$lat)
 
-# Use monthly time dimension
+# Use monthly time dimension (days since 1850-01-01)
 if (is_daily) {
   monthly_dates <- as.Date(paste0(unique_months, "-01"))
-  time_vals <- as.numeric(monthly_dates - as.Date(time_origin))
-  time_dim <- ncdim_def("time", paste("days since", time_origin), time_vals)
+  time_vals <- as.numeric(monthly_dates - as.Date("1850-01-01"))
+  time_dim <- ncdim_def("time", "days since 1850-01-01", time_vals)
 } else {
-  time_dim <- ncdim_def("time", paste("days since", time_origin), pr$time)
+  time_dim <- ncdim_def("time", "days since 1850-01-01", pr$time)
 }
 
 nc_vars <- list()
@@ -457,6 +495,7 @@ for (scale in scales) {
 ncatt_put(nc_out, 0, "title", "SPEI (R SPEI package)")
 ncatt_put(nc_out, 0, "calibration_period", opt$calibration)
 ncatt_put(nc_out, 0, "pet_method", opt$`pet-method`)
+ncatt_put(nc_out, "time", "calendar", "proleptic_gregorian")
 
 nc_close(nc_out)
 
