@@ -31,8 +31,8 @@ cal_years <- as.integer(strsplit(opt$calibration, "-")[[1]])
 
 # Validate Penman method requirements
 if (opt$`pet-method` == "penman") {
-  if (is.null(opt$hurs) || is.null(opt$rsds) || is.null(opt$sfcwind)) {
-    stop("ERROR: Penman method requires --hurs, --rsds, and --sfcwind arguments")
+  if (is.null(opt$hurs) || is.null(opt$rsds) || is.null(opt$sfcwind) || is.null(opt$ps)) {
+    stop("ERROR: Penman method requires --hurs, --rsds, --sfcwind, and --ps arguments")
   }
 }
 
@@ -47,7 +47,7 @@ cat("==============================================\n\n")
 # Helper function to load NetCDF variable
 load_var <- function(file_pattern, varname=NULL) {
   files <- unlist(strsplit(file_pattern, ","))
-  
+
   if (length(files) == 1) {
     nc <- nc_open(files[1])
     if (is.null(varname)) varname <- names(nc$var)[1]
@@ -73,7 +73,7 @@ load_var <- function(file_pattern, varname=NULL) {
     all_data <- list()
     all_time <- c()
     common_origin <- as.Date("1850-01-01")
-    
+
     for (f in files) {
       nc <- nc_open(f)
       if (is.null(varname)) varname <- names(nc$var)[1]
@@ -147,37 +147,37 @@ cat(sprintf("  Is daily: %s\n", is_daily))
 
 if (is_daily) {
   cat("  Detected daily data, aggregating to monthly...\n")
-  
+
   # Create monthly time index using common origin (1850-01-01)
   dates <- as.Date(pr$time, origin="1850-01-01")
-  
+
   cat(sprintf("  First date parsed: %s\n", as.character(dates[1])))
   cat(sprintf("  Last date parsed: %s\n", as.character(dates[length(dates)])))
-  
+
   year_month <- format(dates, "%Y-%m")
   unique_months <- unique(year_month)
   n_months <- length(unique_months)
-  
+
   # Create monthly date objects (first day of each month)
   monthly_dates <- as.Date(paste0(unique_months, "-01"))
-  
-  cat(sprintf("  Monthly dates range: %s to %s\n", 
-             as.character(monthly_dates[1]), 
+
+  cat(sprintf("  Monthly dates range: %s to %s\n",
+             as.character(monthly_dates[1]),
              as.character(monthly_dates[length(monthly_dates)])))
-  
+
   # Initialize monthly arrays
   pr_monthly <- array(0, dim=c(n_lon, n_lat, n_months))
   tasmin_monthly <- array(NA, dim=c(n_lon, n_lat, n_months))
   tasmax_monthly <- array(NA, dim=c(n_lon, n_lat, n_months))
-  
+
   cat(sprintf("  Aggregating %d daily timesteps to %d months...\n", n_time, n_months))
-  
+
   # Aggregate by month
   for (m in seq_along(unique_months)) {
     if (m %% 12 == 0) cat(sprintf("    Month %d/%d\n", m, n_months))
-    
+
     month_mask <- year_month == unique_months[m]
-    
+
     # Precip: sum over month (kg/m2/s * 86400 s/day * days)
     pr_monthly[, , m] <- apply(
       pr$data[, , month_mask, drop=FALSE] * 86400,
@@ -185,27 +185,27 @@ if (is_daily) {
       sum,
       na.rm = TRUE
     )
-    
+
     # Temperature: monthly mean
     tasmin_monthly[, , m] <- apply(tasmin$data[, , month_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
     tasmax_monthly[, , m] <- apply(tasmax$data[, , month_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
   }
-  
+
   # Update arrays
   pr_mm <- pr_monthly
   tasmin$data <- tasmin_monthly
   tasmax$data <- tasmax_monthly
   n_time <- n_months
-  
+
   cat("  Aggregation complete!\n")
-  
+
 } else {
   cat("  Data already monthly\n")
-  
+
   # Create monthly_dates from original time using common origin (1850-01-01)
   dates <- as.Date(pr$time, origin="1850-01-01")
   monthly_dates <- dates
-  
+
   # Calculate actual days in each month
   month_start <- as.Date(format(monthly_dates, "%Y-%m-01"))
   next_month <- seq(month_start[1], by = "month", length.out = length(month_start) + 1)[-1]
@@ -214,7 +214,7 @@ if (is_daily) {
     next_month <- c(next_month, seq(month_start[length(month_start)], by = "month", length.out = 2)[2])
   }
   days_in_month <- as.integer(next_month - month_start)
-  
+
   # Convert kg/m2/s -> mm/month using actual month length
   pr_mm <- array(0, dim = dim(pr$data))
   for (t in seq_along(days_in_month)) {
@@ -236,72 +236,110 @@ pet_data <- array(NA, dim=c(n_lon, n_lat, n_time))
 # Compute PET per grid cell
 for (i in 1:n_lon) {
   if (i %% 5 == 0) cat(sprintf("  Longitude %d/%d\n", i, n_lon))
-  
+
   for (j in 1:n_lat) {
     tmin_ts <- tasmin$data[i, j, ]
     tmax_ts <- tasmax$data[i, j, ]
-    
+
     if (all(is.na(tmin_ts))) next
-    
+
     # Latitude for this cell
     lat_val <- pr$lat[j]
-    
+
     # Compute PET based on method
     pet_ts <- tryCatch({
       if (opt$`pet-method` == "hargreaves") {
         hargreaves(Tmin=tmin_ts, Tmax=tmax_ts, lat=lat_val, verbose=FALSE)
-        
+
       } else if (opt$`pet-method` == "thornthwaite") {
         tas_ts <- (tmin_ts + tmax_ts) / 2
         thornthwaite(Tave=tas_ts, lat=lat_val, verbose=FALSE)
-        
+
       } else if (opt$`pet-method` == "penman") {
         # Penman requires more variables - load if not already loaded
         if (!exists("hurs")) {
+          cat("  Loading Penman variables (hurs, rsds, sfcwind, ps)...\n")
           hurs_raw <- load_var(opt$hurs, "hurs")
           rsds_raw <- load_var(opt$rsds, "rsds")
           sfcwind_raw <- load_var(opt$sfcwind, "sfcwind")
+          ps_raw <- load_var(opt$ps, "ps")
 
-          # Aggregate to monthly if daily data**
+          # Aggregate to monthly if daily data
           if (is_daily) {
+            # Create month masks from Penman variable times (not PR time!)
+            hurs_dates <- as.Date(hurs_raw$time, origin="1850-01-01")
+            hurs_year_month <- format(hurs_dates, "%Y-%m")
+
+            # Should match PR months if files are aligned
+            if (!identical(unique(hurs_year_month), unique_months)) {
+              cat("  WARNING: Penman variable time range differs from PR!\n")
+              cat(sprintf("    PR: %s to %s\n", unique_months[1], unique_months[length(unique_months)]))
+              cat(sprintf("    HURS: %s to %s\n", unique(hurs_year_month)[1],
+                         unique(hurs_year_month)[length(unique(hurs_year_month))]))
+            }
+
             hurs_monthly <- array(NA, dim=c(n_lon, n_lat, n_months))
             rsds_monthly <- array(NA, dim=c(n_lon, n_lat, n_months))
             sfcwind_monthly <- array(NA, dim=c(n_lon, n_lat, n_months))
+            ps_monthly <- array(NA, dim=c(n_lon, n_lat, n_months))
 
             for (m in seq_along(unique_months)) {
-              month_mask <- year_month == unique_months[m]
-              hurs_monthly[, , m] <- apply(hurs_raw$data[, , month_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
-              rsds_monthly[, , m] <- apply(rsds_raw$data[, , month_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
-              sfcwind_monthly[, , m] <- apply(sfcwind_raw$data[, , month_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
+              # Create mask for this month in the Penman data
+              hurs_mask <- hurs_year_month == unique_months[m]
+
+              if (sum(hurs_mask) == 0) {
+                cat(sprintf("  WARNING: No data for month %s in Penman variables\n", unique_months[m]))
+                next
+              }
+
+              hurs_monthly[, , m] <- apply(hurs_raw$data[, , hurs_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
+              rsds_monthly[, , m] <- apply(rsds_raw$data[, , hurs_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
+              sfcwind_monthly[, , m] <- apply(sfcwind_raw$data[, , hurs_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
+              ps_monthly[, , m] <- apply(ps_raw$data[, , hurs_mask, drop=FALSE], c(1,2), mean, na.rm=TRUE)
             }
 
             hurs <<- list(data=hurs_monthly)
             rsds <<- list(data=rsds_monthly)
             sfcwind <<- list(data=sfcwind_monthly)
+            ps <<- list(data=ps_monthly)
           } else {
             hurs <<- hurs_raw
             rsds <<- rsds_raw
             sfcwind <<- sfcwind_raw
+            ps <<- ps_raw
+          }
+
+          # Check for HURS unit issue (should be 0-100%, not 0-1)
+          hurs_sample <- hurs$data[ceiling(n_lon/2), ceiling(n_lat/2), ]
+          hurs_max <- max(hurs_sample[is.finite(hurs_sample)])
+          if (hurs_max <= 1.1) {
+            cat("  NOTE: HURS appears to be in fraction (0-1), converting to percent (0-100)\n")
+            hurs$data <<- hurs$data * 100
           }
         }
-        
+
         # Convert Rs from W/m2 to MJ/m2/day
         rs_val <- rsds$data[i, j, ] * 0.0864
-        
+
+        # Convert surface pressure from Pa to kPa (required by penman())
+        P_kPa <- ps$data[i, j, ] / 1000
+
         penman(
-          Tmin=tmin_ts, 
-          Tmax=tmax_ts,
-          U2=sfcwind$data[i, j, ],
-          Rs=rs_val,
-          RH=hurs$data[i, j, ],
-          lat=lat_val,
-          verbose=FALSE
+          Tmin = tmin_ts,
+          Tmax = tmax_ts,
+          U2   = sfcwind$data[i, j, ],
+          Rs   = rs_val,
+          RH   = hurs$data[i, j, ],
+          lat  = lat_val,
+          P    = P_kPa,
+          verbose = FALSE
         )
       }
     }, error = function(e) {
-      rep(NA, length(tmin_ts))
+      message("PET error @ i=", i, " j=", j, ": ", e$message)
+      rep(NA_real_, length(tmin_ts))
     })
-    
+
     pet_data[i, j, ] <- as.numeric(pet_ts)
   }
 }
@@ -309,10 +347,10 @@ for (i in 1:n_lon) {
 # Save PET if requested
 if (!is.null(opt$`out-pet`)) {
   cat(sprintf("\nSaving PET to: %s\n", opt$`out-pet`))
-  
+
   lon_dim <- ncdim_def("lon", "degrees_east", pr$lon)
   lat_dim <- ncdim_def("lat", "degrees_north", pr$lat)
-  
+
   # Create monthly time dimension (days since 1850-01-01)
   if (is_daily) {
     time_vals <- as.numeric(monthly_dates - as.Date("1850-01-01"))
@@ -320,16 +358,16 @@ if (!is.null(opt$`out-pet`)) {
   } else {
     time_dim <- ncdim_def("time", "days since 1850-01-01", pr$time)
   }
-  
+
   pet_var <- ncvar_def("pet", "mm/month", list(lon_dim, lat_dim, time_dim), -999,
                        longname=sprintf("Potential ET (%s)", opt$`pet-method`))
-  
+
   nc_out <- nc_create(opt$`out-pet`, pet_var)
-  
+
   # Replace NaN/Inf with missing value
   pet_clean <- pet_data
   pet_clean[!is.finite(pet_clean)] <- -999
-  
+
   ncvar_put(nc_out, "pet", pet_clean)
   ncatt_put(nc_out, 0, "title", sprintf("PET (%s method)", opt$`pet-method`))
   ncatt_put(nc_out, "time", "calendar", "proleptic_gregorian")
@@ -349,15 +387,15 @@ wb <- pr_mm - pet_data
 if (!is.null(opt$`out-pet`)) {
   wb_file <- sub("pet_", "wb_", opt$`out-pet`)
   cat(sprintf("Saving water balance to: %s\n", wb_file))
-  
+
   wb_var <- ncvar_def("wb", "mm/month", list(lon_dim, lat_dim, time_dim), -999,
                       longname="Water Balance (P - PET)")
   nc_wb <- nc_create(wb_file, wb_var)
-  
+
   # Replace NaN/Inf with missing value
   wb_clean <- wb
   wb_clean[!is.finite(wb_clean)] <- -999
-  
+
   ncvar_put(nc_wb, "wb", wb_clean)
   ncatt_put(nc_wb, 0, "title", "Water Balance (Precipitation - PET)")
   ncatt_put(nc_wb, 0, "pet_method", opt$`pet-method`)
@@ -370,38 +408,38 @@ spei_results <- list()
 
 for (scale in scales) {
   cat(sprintf("\nSPEI-%d:\n", scale))
-  
+
   spei_out <- array(NA, dim=c(n_lon, n_lat, n_time))
-  
+
   # Track success rate
   n_success <- 0
   n_attempts <- 0
   first_error <- NULL
-  
+
   for (i in 1:n_lon) {
     if (i %% 5 == 0) cat(sprintf("  Longitude %d/%d\n", i, n_lon))
-    
+
     for (j in 1:n_lat) {
       wb_ts <- wb[i, j, ]
-      
+
       if (all(is.na(wb_ts))) next
-      
+
       n_attempts <- n_attempts + 1
-      
+
       # Convert to monthly ts object with correct start date
       start_year <- as.integer(format(monthly_dates[1], "%Y"))
       start_month <- as.integer(format(monthly_dates[1], "%m"))
-      
+
       wb_ts_obj <- ts(wb_ts, frequency=12, start=c(start_year, start_month))
-      
+
       # Debug first cell
       if (i == 1 && j == 1 && scale == scales[1]) {
-        cat(sprintf("    First cell: start=%d-%02d, length=%d months\n", 
+        cat(sprintf("    First cell: start=%d-%02d, length=%d months\n",
                    start_year, start_month, length(wb_ts)))
-        cat(sprintf("    WB range: %.1f to %.1f mm/month\n", 
+        cat(sprintf("    WB range: %.1f to %.1f mm/month\n",
                    min(wb_ts, na.rm=TRUE), max(wb_ts, na.rm=TRUE)))
       }
-      
+
       tryCatch({
         spei_calc <- spei(
           wb_ts_obj,
@@ -411,10 +449,10 @@ for (scale in scales) {
           na.rm = TRUE,
           verbose = FALSE
         )
-        
+
         spei_out[i, j, ] <- as.numeric(spei_calc$fitted)
         n_success <- n_success + 1
-        
+
       }, error = function(e) {
         # Save first error
         if (is.null(first_error)) {
@@ -423,23 +461,23 @@ for (scale in scales) {
       })
     }
   }
-  
+
   success_rate <- 100 * n_success / n_attempts
   cat(sprintf("  Success rate: %.1f%% (%d/%d cells)\n", success_rate, n_success, n_attempts))
-  
+
   if (!is.null(first_error)) {
     cat(sprintf("  Example error: %s\n", first_error))
   }
-  
+
   spei_results[[sprintf("spei_%02d", scale)]] <- spei_out
-  
+
   # Check how many valid values we got
   n_valid <- sum(is.finite(spei_out))
   n_total <- length(spei_out)
   pct_valid <- 100 * n_valid / n_total
-  
+
   cat(sprintf("  Computed: %.1f%% valid values\n", pct_valid))
-  
+
   if (pct_valid < 10) {
     cat(sprintf("  WARNING: Less than 10%% valid SPEI values! Check your data.\n"))
   }
@@ -476,19 +514,19 @@ nc_out <- nc_create(opt$`out-spei`, nc_vars)
 
 for (scale in scales) {
   var_name <- sprintf("spei_%02d", scale)
-  
+
   # Replace NaN/Inf with missing value before writing
   spei_data <- spei_results[[var_name]]
   spei_data[!is.finite(spei_data)] <- -999
-  
+
   # Count valid values for debugging
   n_valid <- sum(is.finite(spei_results[[var_name]]))
   n_total <- length(spei_results[[var_name]])
   pct_valid <- 100 * n_valid / n_total
-  
-  cat(sprintf("  %s: %.1f%% valid values (%d/%d)\n", 
+
+  cat(sprintf("  %s: %.1f%% valid values (%d/%d)\n",
              var_name, pct_valid, n_valid, n_total))
-  
+
   ncvar_put(nc_out, var_name, spei_data)
 }
 
